@@ -959,6 +959,14 @@ if(_components.length>0){var root=ReactDOM.createRoot(document.getElementById('r
 <body>
 <div id="root"></div>
 <script>
+// Expose React hooks and utilities as globals (since imports are stripped)
+var useState=React.useState,useEffect=React.useEffect,useCallback=React.useCallback,
+useMemo=React.useMemo,useRef=React.useRef,useReducer=React.useReducer,
+useContext=React.useContext,useLayoutEffect=React.useLayoutEffect,
+memo=React.memo,forwardRef=React.forwardRef,createContext=React.createContext,
+Fragment=React.Fragment,createElement=React.createElement,cloneElement=React.cloneElement,
+createRef=React.createRef,Component=React.Component,PureComponent=React.PureComponent,
+StrictMode=React.StrictMode,Suspense=React.Suspense,lazy=React.lazy;
 window.addEventListener('DOMContentLoaded', function() {
   var tsxCode = decodeURIComponent(escape(atob('${b64Code}')));
   try {
