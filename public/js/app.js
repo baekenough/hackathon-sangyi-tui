@@ -936,6 +936,12 @@ function runProjectInSandbox(files, projectContainer) {
       .replace(/^export\s+default\s+/gm, '')
       .replace(/^export\s+/gm, '');
 
+    const autoRender = `
+var _components = [typeof App!=='undefined'&&App,typeof TodoApp!=='undefined'&&TodoApp,typeof Main!=='undefined'&&Main,typeof Root!=='undefined'&&Root,typeof Counter!=='undefined'&&Counter,typeof Home!=='undefined'&&Home].filter(Boolean);
+if(_components.length>0){var root=ReactDOM.createRoot(document.getElementById('root'));root.render(React.createElement(_components[0]));}`;
+    const fullCode = cleanedJs + '\n' + autoRender;
+    const b64Code = btoa(unescape(encodeURIComponent(fullCode)));
+
     htmlContent = `<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
@@ -950,24 +956,22 @@ function runProjectInSandbox(files, projectContainer) {
 </head>
 <body>
 <div id="root"></div>
-<script type="text/babel" data-presets="env,react,typescript">
-${cleanedJs}
-
-// Auto-render: find and render the main component
-const _components = [
-  typeof App !== 'undefined' && App,
-  typeof TodoApp !== 'undefined' && TodoApp,
-  typeof Main !== 'undefined' && Main,
-  typeof Root !== 'undefined' && Root,
-  typeof Counter !== 'undefined' && Counter
-].filter(Boolean);
-
-if (_components.length > 0) {
-  const root = ReactDOM.createRoot(document.getElementById('root'));
-  root.render(React.createElement(_components[0]));
-} else {
-  console.error('No main component found (tried: App, TodoApp, Main, Root, Counter)');
-}
+<script>
+window.addEventListener('DOMContentLoaded', function() {
+  var tsxCode = decodeURIComponent(escape(atob('${b64Code}')));
+  try {
+    var result = Babel.transform(tsxCode, {
+      presets: [['env',{modules:false}],'react',['typescript',{allExtensions:true,isTSX:true}]],
+      filename: 'app.tsx'
+    });
+    eval(result.code);
+  } catch(e) {
+    document.getElementById('root').innerHTML =
+      '<div style="color:#FF453A;font-family:monospace;padding:16px;white-space:pre-wrap">' +
+      '<h3>Error</h3>' + e.message + '</div>';
+    console.error(e);
+  }
+});
 <\/script>
 </body></html>`;
   } else if (jsFiles.length > 0) {
