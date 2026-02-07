@@ -1951,82 +1951,192 @@ textarea:focus-visible {
   }
 }
 
-/* === Code Block Toolbar === */
+/* === Project Container (File Tree) === */
 
-.code-block-wrapper {
-  position: relative;
+.file-tree-project {
   margin: 12px 0;
   border-radius: 10px;
-  overflow: hidden;
-  border: 1px solid rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.1);
   background: rgba(30,30,32,0.9);
+  overflow: hidden;
 }
 
-.code-block-wrapper pre {
-  margin: 0;
-  padding: 14px 16px;
-  border-radius: 0;
-  border: none;
-  background: transparent;
-  overflow-x: auto;
-}
-
-.code-block-wrapper pre code {
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 13px;
-  line-height: 1.5;
-  color: #e5e5e7;
-}
-
-.code-block-toolbar {
+.file-tree-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 12px;
+  padding: 10px 14px;
   background: rgba(255,255,255,0.04);
   border-bottom: 1px solid rgba(255,255,255,0.06);
 }
 
-.code-block-lang {
-  font-size: 11px;
+.file-tree-title {
+  font-size: 13px;
   font-weight: 600;
-  color: #98989d;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-family: 'SF Mono', monospace;
+  color: #e5e5e7;
+  letter-spacing: 0.2px;
 }
 
-.code-block-actions {
+.file-tree-actions {
   display: flex;
-  gap: 4px;
+  gap: 6px;
 }
 
-.code-action-btn {
+.file-tree-btn {
   background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.1);
   color: #98989d;
-  padding: 3px 10px;
+  padding: 4px 12px;
   border-radius: 6px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.15s ease;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
-.code-action-btn:hover {
+.file-tree-btn:hover {
   background: rgba(255,255,255,0.1);
   color: #e5e5e7;
 }
 
-.code-action-btn[data-action="run"] {
+.file-tree-btn[data-action="run-project"] {
   color: #30D158;
   border-color: rgba(48,209,88,0.3);
 }
 
-.code-action-btn[data-action="run"]:hover {
+.file-tree-btn[data-action="run-project"]:hover {
   background: rgba(48,209,88,0.15);
-  color: #30D158;
+}
+
+.file-tree-btn[data-action="zip-project"] {
+  color: #0A84FF;
+  border-color: rgba(10,132,255,0.3);
+}
+
+.file-tree-btn[data-action="zip-project"]:hover {
+  background: rgba(10,132,255,0.15);
+}
+
+/* File Tree */
+
+.file-tree-list {
+  padding: 0;
+}
+
+.file-tree-item {
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.file-tree-item:last-child {
+  border-bottom: none;
+}
+
+.file-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  user-select: none;
+}
+
+.file-tree-row:hover {
+  background: rgba(255,255,255,0.04);
+}
+
+.file-tree-item.active .file-tree-row {
+  background: rgba(255,255,255,0.06);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.file-tree-file-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+}
+
+.file-tree-filename {
+  font-size: 13px;
+  font-weight: 500;
+  color: #e5e5e7;
+  flex: 1;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.file-tree-meta {
+  font-size: 11px;
+  color: #48484a;
+  font-family: 'SF Mono', monospace;
+  flex-shrink: 0;
+}
+
+.file-tree-copy-btn {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #636366;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+  opacity: 0;
+  flex-shrink: 0;
+}
+
+.file-tree-row:hover .file-tree-copy-btn,
+.file-tree-item.active .file-tree-copy-btn {
+  opacity: 1;
+}
+
+.file-tree-copy-btn:hover {
+  background: rgba(255,255,255,0.08);
+  color: #e5e5e7;
+}
+
+/* Collapsible Code Content */
+
+.file-tree-code {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.file-tree-item.active .file-tree-code {
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.file-tree-code pre {
+  margin: 0;
+  padding: 12px 16px;
+  background: rgba(0,0,0,0.2);
+  border: none;
+  border-radius: 0;
+}
+
+.file-tree-code pre code {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #e5e5e7;
+  white-space: pre;
+  display: block;
+  overflow-x: auto;
+}
+
+/* Scrollbar for code content */
+.file-tree-code::-webkit-scrollbar {
+  width: 6px;
+}
+.file-tree-code::-webkit-scrollbar-track {
+  background: transparent;
+}
+.file-tree-code::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.1);
+  border-radius: 3px;
 }
 
 /* === Sandbox Panel === */
@@ -2150,4 +2260,202 @@ textarea:focus-visible {
     border-left: none;
     border-top: 1px solid rgba(255,255,255,0.06);
   }
+}
+
+/* === File Tree Project View === */
+
+.file-tree-project {
+  margin: 12px 0;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(30,30,32,0.9);
+}
+
+.file-tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.file-tree-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #e5e5e7;
+}
+
+.file-tree-icon {
+  font-size: 15px;
+}
+
+.file-tree-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.file-tree-btn {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.05);
+  color: #98989d;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.file-tree-btn:hover {
+  background: rgba(255,255,255,0.1);
+  color: #e5e5e7;
+}
+
+.file-tree-run {
+  color: #30D158;
+  border-color: rgba(48,209,88,0.3);
+}
+
+.file-tree-run:hover {
+  background: rgba(48,209,88,0.15);
+  color: #30D158;
+}
+
+.file-tree-export {
+  color: #0A84FF;
+  border-color: rgba(10,132,255,0.3);
+}
+
+.file-tree-export:hover {
+  background: rgba(10,132,255,0.15);
+  color: #0A84FF;
+}
+
+/* File List */
+
+.file-tree-list {
+  padding: 0;
+}
+
+.file-tree-item {
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.file-tree-item:last-child {
+  border-bottom: none;
+}
+
+.file-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+  user-select: none;
+}
+
+.file-tree-row:hover {
+  background: rgba(255,255,255,0.04);
+}
+
+.file-tree-item.expanded .file-tree-row {
+  background: rgba(255,255,255,0.06);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.file-tree-file-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+}
+
+.file-tree-filename {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: #e5e5e7;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.file-tree-meta {
+  font-size: 11px;
+  color: #48484a;
+  font-family: 'SF Mono', monospace;
+  flex-shrink: 0;
+}
+
+.file-tree-chevron {
+  font-size: 11px;
+  color: #48484a;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+}
+
+.file-tree-chevron.open {
+  color: #98989d;
+}
+
+/* Expanded Code */
+
+.file-tree-code {
+  max-height: 400px;
+  overflow: auto;
+  border-top: 1px solid rgba(255,255,255,0.04);
+  animation: fileTreeSlide 0.2s ease;
+}
+
+.file-tree-code pre {
+  margin: 0;
+  padding: 14px 16px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 0;
+  border: none;
+  overflow-x: auto;
+}
+
+.file-tree-code pre code {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #e5e5e7;
+}
+
+@keyframes fileTreeSlide {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 400px;
+  }
+}
+
+/* Scrollbar for code area */
+.file-tree-code::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.file-tree-code::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.file-tree-code::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.1);
+  border-radius: 3px;
+}
+
+.file-tree-code::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.2);
 }

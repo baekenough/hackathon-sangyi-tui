@@ -49,43 +49,152 @@ function escapeHtml(text) {
 
 function formatMarkdown(text) {
   if (!text) return '';
-  let html = escapeHtml(text);
 
-  // Code blocks: ```...```
-  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_match, lang, code) => {
-    const trimmed = code.trim();
-    const encoded = btoa(unescape(encodeURIComponent(trimmed)));
-    const langLabel = lang || 'code';
-    const runnable = ['html', 'javascript', 'js', 'css', 'typescript', 'ts'].includes(lang.toLowerCase());
-    return `<div class="code-block-wrapper" data-lang="${langLabel}" data-code="${encoded}">` +
-      `<div class="code-block-toolbar">` +
-      `<span class="code-block-lang">${langLabel}</span>` +
-      `<div class="code-block-actions">` +
-      `<button class="code-action-btn" data-action="copy" title="Copy to clipboard">Copy</button>` +
-      `<button class="code-action-btn" data-action="download" title="Download file">Export</button>` +
-      (runnable ? `<button class="code-action-btn" data-action="run" title="Run in sandbox">▶ Run</button>` : '') +
-      `</div></div>` +
-      `<pre><code>${trimmed}</code></pre></div>`;
-  });
+  // Phase 1: Parse into segments (text vs code)
+  const segments = [];
+  const codeRe = /```(\w*)\n?([\s\S]*?)```/g;
+  let last = 0, m;
+  while ((m = codeRe.exec(text)) !== null) {
+    if (m.index > last) segments.push({ type: 'text', raw: text.slice(last, m.index) });
+    const lang = m[1] || 'txt';
+    const code = m[2].trim();
+    segments.push({ type: 'code', lang, code, filename: detectFilename(code, lang) });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) segments.push({ type: 'text', raw: text.slice(last) });
 
-  // Inline code: `...`
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Phase 2: Group consecutive code blocks into projects
+  const output = [];
+  let i = 0;
+  while (i < segments.length) {
+    const seg = segments[i];
+    if (seg.type === 'code') {
+      // Collect consecutive code blocks (allow short text gaps < 80 chars between them)
+      const files = [seg];
+      let j = i + 1;
+      while (j < segments.length) {
+        if (segments[j].type === 'code') {
+          files.push(segments[j]);
+          j++;
+        } else if (segments[j].type === 'text' && segments[j].raw.trim().length < 80 && j + 1 < segments.length && segments[j + 1].type === 'code') {
+          // Short text between code blocks — skip it, keep grouping
+          j++; // skip text
+        } else {
+          break;
+        }
+      }
+      // Find project name from the last text segment before this group
+      let projName = 'Code';
+      for (let k = output.length - 1; k >= 0; k--) {
+        if (output[k].type === 'text') {
+          const headingMatch = output[k].raw.match(/#{1,3}\s+(.+)/);
+          if (headingMatch) { projName = headingMatch[1].trim(); break; }
+          break;
+        }
+      }
+      output.push({ type: 'project', name: projName, files });
+      i = j;
+    } else {
+      output.push(seg);
+      i++;
+    }
+  }
 
-  // Bold: **...**
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // Phase 3: Render HTML
+  let html = '';
+  for (const item of output) {
+    if (item.type === 'text') {
+      html += renderInlineMarkdown(item.raw);
+    } else if (item.type === 'project') {
+      html += renderProjectContainer(item.name, item.files);
+    }
+  }
+  return html;
+}
 
-  // Italic: *...*
-  html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
+function renderInlineMarkdown(text) {
+  let h = escapeHtml(text);
+  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+  h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
+  // Headings
+  h = h.replace(/^### (.+)$/gm, '<h4>$1</h4>');
+  h = h.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+  h = h.replace(/^# (.+)$/gm, '<h2>$1</h2>');
+  // Lists
+  h = h.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
+  h = h.replace(/(<li>.*<\/li>\n?)+/g, (m) => '<ul>' + m + '</ul>');
+  h = h.replace(/\n/g, '<br>');
+  // Clean up double <br> from headings
+  h = h.replace(/<br><(h[234]|ul|li)/g, '<$1');
+  h = h.replace(/<\/(h[234]|ul|li)><br>/g, '</$1>');
+  return h;
+}
 
-  // Newlines to <br> (skip inside code-block-wrapper)
-  const parts = html.split(/(<div class="code-block-wrapper"[\s\S]*?<\/code><\/pre><\/div>)/g);
-  html = parts
-    .map((part, i) => {
-      if (i % 2 === 1) return part; // inside <pre>
-      return part.replace(/\n/g, '<br>');
-    })
-    .join('');
+function detectFilename(code, lang) {
+  const extMap = {
+    javascript:'js', js:'js', jsx:'jsx', tsx:'tsx', typescript:'ts', ts:'ts',
+    python:'py', py:'py', html:'html', css:'css', json:'json', bash:'sh',
+    shell:'sh', sql:'sql', rust:'rs', go:'go', java:'java', kotlin:'kt',
+    ruby:'rb', yaml:'yaml', yml:'yml', xml:'xml', markdown:'md', md:'md',
+    txt:'txt', code:'txt'
+  };
+  const ext = extMap[lang.toLowerCase()] || lang || 'txt';
+  // Try to detect from first-line comment: // App.jsx, /* styles.css */, # main.py
+  const firstLine = code.split('\n')[0].trim();
+  const commentFile = firstLine.match(/^(?:\/\/|\/\*|#)\s*(\S+\.\w+)/);
+  if (commentFile) return commentFile[1].replace(/\s*\*\//, '');
+  // Try export default
+  const expMatch = code.match(/export\s+default\s+(?:function\s+)?(\w+)/);
+  if (expMatch) return expMatch[1] + '.' + ext;
+  // Try class/function name
+  const classMatch = code.match(/(?:class|function)\s+(\w+)/);
+  if (classMatch && ext !== 'css') return classMatch[1] + '.' + ext;
+  // Fallback
+  return 'index.' + ext;
+}
 
+function renderProjectContainer(name, files) {
+  // Encode all files data for ZIP/Run
+  const filesData = files.map(f => ({
+    filename: f.filename,
+    lang: f.lang,
+    code: f.code,
+    encoded: btoa(unescape(encodeURIComponent(f.code)))
+  }));
+  const projectData = btoa(unescape(encodeURIComponent(JSON.stringify(filesData))));
+  const hasRunnable = files.some(f => ['html','javascript','js','css','jsx','tsx','ts','typescript'].includes(f.lang.toLowerCase()));
+  const totalSize = files.reduce((sum, f) => sum + f.code.length, 0);
+
+  let html = `<div class="file-tree-project" data-project="${escapeHtml(projectData)}">`;
+  html += `<div class="file-tree-header">`;
+  html += `<span class="file-tree-title">📁 ${escapeHtml(name)}</span>`;
+  html += `<div class="file-tree-actions">`;
+  if (hasRunnable) {
+    html += `<button class="file-tree-btn" data-action="run-project" title="Run all files in sandbox">▶ Run</button>`;
+  }
+  html += `<button class="file-tree-btn" data-action="zip-project" title="Download as ZIP">📦 ZIP</button>`;
+  html += `</div></div>`;
+
+  html += `<div class="file-tree-list">`;
+  for (let idx = 0; idx < files.length; idx++) {
+    const f = files[idx];
+    const encoded = filesData[idx].encoded;
+    const sizeStr = f.code.length > 1024 ? (f.code.length / 1024).toFixed(1) + ' KB' : f.code.length + ' B';
+    const iconMap = { js:'📄', jsx:'⚛️', ts:'📘', tsx:'⚛️', html:'🌐', css:'🎨', py:'🐍', json:'📋', sh:'🔧', sql:'🗄️', rs:'🦀', go:'🐹', java:'☕', kt:'🟣', rb:'💎', yaml:'⚙️', md:'📝' };
+    const icon = iconMap[f.lang.toLowerCase()] || '📄';
+
+    html += `<div class="file-tree-item" data-code="${encoded}" data-lang="${escapeHtml(f.lang)}" data-filename="${escapeHtml(f.filename)}">`;
+    html += `<div class="file-tree-row">`;
+    html += `<span class="file-tree-file-icon">${icon}</span>`;
+    html += `<span class="file-tree-filename">${escapeHtml(f.filename)}</span>`;
+    html += `<span class="file-tree-meta">${sizeStr}</span>`;
+    html += `<button class="file-tree-copy-btn" title="Copy">Copy</button>`;
+    html += `</div>`;
+    html += `<div class="file-tree-code"><pre><code>${escapeHtml(f.code)}</code></pre></div>`;
+    html += `</div>`;
+  }
+  html += `</div></div>`;
   return html;
 }
 
@@ -547,24 +656,40 @@ function showSQLConsole() {
   });
 }
 
-// --- Code Block Download ---
+async function downloadProjectZip(files, projectName) {
+  // Dynamically load JSZip if not loaded
+  if (!window.JSZip) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+      s.onload = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+  const zip = new JSZip();
+  const folderName = projectName.replace(/[^a-zA-Z0-9-_ ]/g, '').trim() || 'project';
+  const folder = zip.folder(folderName);
 
-function downloadCodeBlock(code, lang) {
-  const extMap = {
-    javascript: 'js', js: 'js', typescript: 'ts', ts: 'ts',
-    python: 'py', html: 'html', css: 'css', json: 'json',
-    bash: 'sh', shell: 'sh', sql: 'sql', rust: 'rs',
-    go: 'go', java: 'java', kotlin: 'kt', ruby: 'rb',
-    yaml: 'yaml', yml: 'yml', xml: 'xml', markdown: 'md', md: 'md',
-    code: 'txt'
-  };
-  const ext = extMap[lang.toLowerCase()] || 'txt';
-  const filename = `code-${Date.now()}.${ext}`;
-  const blob = new Blob([code], { type: 'text/plain' });
+  // Deduplicate filenames
+  const usedNames = new Set();
+  for (const f of files) {
+    let name = f.filename;
+    let counter = 1;
+    while (usedNames.has(name)) {
+      const dot = name.lastIndexOf('.');
+      name = dot > 0 ? name.slice(0, dot) + `-${counter++}` + name.slice(dot) : name + `-${counter++}`;
+    }
+    usedNames.add(name);
+    const code = f.code || decodeURIComponent(escape(atob(f.encoded)));
+    folder.file(name, code);
+  }
+
+  const blob = await zip.generateAsync({ type: 'blob' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename;
+  a.download = `${folderName}.zip`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -680,6 +805,66 @@ function runInSandbox(code, lang) {
   window.removeEventListener('message', window._sandboxHandler);
   window._sandboxHandler = handler;
   window.addEventListener('message', handler);
+}
+
+function runProjectInSandbox(files) {
+  // Combine all files into a single runnable HTML page
+  let htmlFile = files.find(f => f.lang === 'html');
+  const cssFiles = files.filter(f => f.lang === 'css');
+  const jsFiles = files.filter(f => ['javascript', 'js', 'jsx', 'tsx', 'typescript', 'ts'].includes(f.lang));
+
+  let htmlContent = '';
+
+  if (htmlFile) {
+    // Use the HTML file as base, inject CSS and JS
+    htmlContent = htmlFile.content;
+    if (cssFiles.length > 0) {
+      const cssStr = cssFiles.map(f => f.content).join('\n');
+      if (htmlContent.includes('</head>')) {
+        htmlContent = htmlContent.replace('</head>', `<style>${cssStr}</style></head>`);
+      } else {
+        htmlContent = `<style>${cssStr}</style>` + htmlContent;
+      }
+    }
+    if (jsFiles.length > 0) {
+      const jsStr = jsFiles.map(f => f.content).join('\n;\n');
+      if (htmlContent.includes('</body>')) {
+        htmlContent = htmlContent.replace('</body>', `<script>${jsStr}<\/script></body>`);
+      } else {
+        htmlContent += `<script>${jsStr}<\/script>`;
+      }
+    }
+  } else if (jsFiles.length > 0) {
+    // JS-only project: wrap with console capture
+    const allJs = jsFiles.map(f => f.content).join('\n;\n');
+    const allCss = cssFiles.map(f => f.content).join('\n');
+    htmlContent = `<!DOCTYPE html>
+<html><head><style>
+  body { font-family: 'SF Mono', monospace; background: #1c1c1e; color: #e5e5e7; padding: 16px; font-size: 13px; }
+  .log { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.05); white-space: pre-wrap; }
+  .log.error { color: #FF453A; }
+  .log.warn { color: #FFD60A; }
+  ${allCss}
+</style></head><body>
+<script>
+  const _log=console.log,_err=console.error,_warn=console.warn;
+  function fmt(...a){return a.map(x=>typeof x==='object'?JSON.stringify(x,null,2):String(x)).join(' ')}
+  function add(t,c){const d=document.createElement('div');d.className='log '+c;d.textContent=t;document.body.appendChild(d);window.parent.postMessage({type:'sandbox-console',level:c,text:t},'*')}
+  console.log=(...a)=>{add(fmt(...a),'');_log(...a)};
+  console.error=(...a)=>{add(fmt(...a),'error');_err(...a)};
+  console.warn=(...a)=>{add(fmt(...a),'warn');_warn(...a)};
+  window.onerror=(m,s,l)=>{add('Error: '+m+' (line '+l+')','error')};
+  try{${allJs}}catch(e){console.error(e.message)}
+<\/script></body></html>`;
+  } else if (cssFiles.length > 0) {
+    const allCss = cssFiles.map(f => f.content).join('\n');
+    htmlContent = `<!DOCTYPE html><html><head><style>${allCss}</style></head><body><div class="preview"><h2>CSS Preview</h2><p>Your styles are applied.</p><button>Button</button><a href="#">Link</a><input placeholder="Input"></div></body></html>`;
+  } else {
+    htmlContent = `<!DOCTYPE html><html><body style="background:#1c1c1e;color:#e5e5e7;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:80vh"><div style="text-align:center"><p style="font-size:48px">🚫</p><p>No runnable files (HTML/JS/CSS) found in this project.</p></div></body></html>`;
+  }
+
+  // Reuse the existing sandbox panel
+  runInSandbox(htmlContent, 'html');
 }
 
 // --- Send Message ---
@@ -1354,31 +1539,40 @@ function setupEventListeners() {
     }
   });
 
-  // Code block actions (event delegation)
+  // Project & file actions (event delegation)
   document.getElementById('messages').addEventListener('click', (e) => {
-    const btn = e.target.closest('.code-action-btn');
-    if (!btn) return;
+    // Project-level actions
+    const projBtn = e.target.closest('.file-tree-btn');
+    if (projBtn) {
+      const container = projBtn.closest('.file-tree-project');
+      const projectData = container.dataset.project;
+      const files = JSON.parse(decodeURIComponent(escape(atob(projectData))));
+      if (projBtn.dataset.action === 'zip-project') {
+        downloadProjectZip(files, container.querySelector('.file-tree-title').textContent.replace('📁 ', ''));
+      } else if (projBtn.dataset.action === 'run-project') {
+        runProjectInSandbox(files);
+      }
+      return;
+    }
 
-    const wrapper = btn.closest('.code-block-wrapper');
-    if (!wrapper) return;
+    // File copy button
+    const copyBtn = e.target.closest('.file-tree-copy-btn');
+    if (copyBtn) {
+      const file = copyBtn.closest('.file-tree-item');
+      const code = decodeURIComponent(escape(atob(file.dataset.code)));
+      navigator.clipboard.writeText(code).then(() => {
+        copyBtn.textContent = '✓';
+        setTimeout(() => copyBtn.textContent = 'Copy', 1500);
+      });
+      return;
+    }
 
-    const encoded = wrapper.dataset.code;
-    const lang = wrapper.dataset.lang;
-    const code = decodeURIComponent(escape(atob(encoded)));
-
-    switch (btn.dataset.action) {
-      case 'copy':
-        navigator.clipboard.writeText(code).then(() => {
-          btn.textContent = '✓ Copied';
-          setTimeout(() => btn.textContent = 'Copy', 1500);
-        });
-        break;
-      case 'download':
-        downloadCodeBlock(code, lang);
-        break;
-      case 'run':
-        runInSandbox(code, lang);
-        break;
+    // File header click to toggle expand/collapse
+    const fileHeader = e.target.closest('.file-tree-row');
+    if (fileHeader && !e.target.closest('.file-tree-copy-btn')) {
+      const file = fileHeader.closest('.file-tree-item');
+      file.classList.toggle('active');
+      return;
     }
   });
 
