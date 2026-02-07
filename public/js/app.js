@@ -1,0 +1,1211 @@
+// app.js - Main application controller for sangyi-tui
+import {
+  initDB,
+  getWorkspaces,
+  createWorkspace,
+  getWorkspace,
+  getMessages,
+  addMessage,
+  updateWorkspace,
+  deleteWorkspace,
+  getAgents,
+  getSkills,
+  getGuides,
+  getWorkspaceConfig,
+  toggleWorkspaceConfig,
+  clearMessages,
+  getSessionId,
+  getTeam,
+  getTeams,
+  createTeam,
+  deleteTeam,
+  getTeamMembers,
+  addTeamMember,
+  getTasks,
+  createTask,
+  updateTask,
+  deleteTask,
+} from './db.js';
+import { sendChatMessage, abortCurrentRequest } from './chat.js';
+import { renderTeamPanel, showCreateTeamModal } from './teams.js';
+import { handleMentionInput, handleMentionKeydown, closeMentionAutocomplete, isMentionActive, extractMentionedAgent } from './mentions.js';
+
+// --- State ---
+let currentWorkspaceId = null;
+let isStreaming = false;
+let currentAssistantContent = '';
+let allWorkspaces = [];
+let rightPanelOpen = false;
+let openSections = new Set(['agents']); // track which sections are open
+let currentTeamId = null;
+
+// --- Helpers ---
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function formatMarkdown(text) {
+  if (!text) return '';
+  let html = escapeHtml(text);
+
+  // Code blocks: ```...```
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_match, _lang, code) => {
+    return `<pre><code>${code.trim()}</code></pre>`;
+  });
+
+  // Inline code: `...`
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Bold: **...**
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  // Italic: *...*
+  html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
+
+  // Newlines to <br> (skip inside <pre>)
+  const parts = html.split(/(<pre><code>[\s\S]*?<\/code><\/pre>)/g);
+  html = parts
+    .map((part, i) => {
+      if (i % 2 === 1) return part; // inside <pre>
+      return part.replace(/\n/g, '<br>');
+    })
+    .join('');
+
+  return html;
+}
+
+function getModelShortName(model) {
+  if (!model) return 'sonnet';
+  if (model.includes('opus')) return 'opus';
+  if (model.includes('haiku')) return 'haiku';
+  return 'sonnet';
+}
+
+function scrollToBottom() {
+  const container = document.getElementById('messages');
+  container.scrollTop = container.scrollHeight;
+}
+
+// --- Modal System ---
+
+function showModal({ title, body, buttons = [], onClose }) {
+  const overlay = document.getElementById('modal-overlay');
+  const titleEl = document.getElementById('modal-title');
+  const bodyEl = document.getElementById('modal-body');
+  const footerEl = document.getElementById('modal-footer');
+  const closeBtn = document.getElementById('modal-close');
+
+  titleEl.textContent = title;
+  if (typeof body === 'string') {
+    bodyEl.innerHTML = body;
+  } else {
+    bodyEl.innerHTML = '';
+    bodyEl.appendChild(body);
+  }
+
+  footerEl.innerHTML = '';
+  for (const btn of buttons) {
+    const el = document.createElement('button');
+    el.className = `modal-btn ${btn.class || 'modal-btn-secondary'}`;
+    el.textContent = btn.label;
+    el.addEventListener('click', () => {
+      if (btn.onClick) btn.onClick();
+      if (btn.close !== false) hideModal();
+    });
+    footerEl.appendChild(el);
+  }
+
+  overlay.classList.add('active');
+
+  const handleClose = () => {
+    hideModal();
+    if (onClose) onClose();
+  };
+
+  closeBtn.onclick = handleClose;
+  overlay.onclick = (e) => {
+    if (e.target === overlay) handleClose();
+  };
+
+  // Focus first input if any
+  setTimeout(() => {
+    const firstInput = bodyEl.querySelector('input, textarea');
+    if (firstInput) firstInput.focus();
+  }, 100);
+
+  return overlay;
+}
+
+function hideModal() {
+  document.getElementById('modal-overlay').classList.remove('active');
+}
+
+function showConfirmModal(title, message, onConfirm) {
+  showModal({
+    title,
+    body: `<p>${message}</p>`,
+    buttons: [
+      { label: 'Cancel', class: 'modal-btn-secondary' },
+      { label: 'Confirm', class: 'modal-btn-danger', onClick: onConfirm },
+    ],
+  });
+}
+
+function showInputModal(title, fields, onSubmit) {
+  const form = document.createElement('div');
+  for (const field of fields) {
+    const group = document.createElement('div');
+    group.className = 'field-group';
+    const label = document.createElement('label');
+    label.textContent = field.label;
+    group.appendChild(label);
+
+    let input;
+    if (field.type === 'textarea') {
+      input = document.createElement('textarea');
+      input.rows = field.rows || 3;
+    } else {
+      input = document.createElement('input');
+      input.type = 'text';
+    }
+    input.placeholder = field.placeholder || '';
+    input.value = field.value || '';
+    input.dataset.field = field.name;
+    group.appendChild(input);
+    form.appendChild(group);
+  }
+
+  showModal({
+    title,
+    body: form,
+    buttons: [
+      { label: 'Cancel', class: 'modal-btn-secondary' },
+      {
+        label: 'Create',
+        class: 'modal-btn-primary',
+        onClick: () => {
+          const values = {};
+          for (const field of fields) {
+            const el = form.querySelector(`[data-field="${field.name}"]`);
+            values[field.name] = el ? el.value.trim() : '';
+          }
+          onSubmit(values);
+        },
+      },
+    ],
+  });
+
+  // Handle Enter key in single-line inputs
+  form.querySelectorAll('input[type="text"]').forEach(input => {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const values = {};
+        for (const field of fields) {
+          const el = form.querySelector(`[data-field="${field.name}"]`);
+          values[field.name] = el ? el.value.trim() : '';
+        }
+        onSubmit(values);
+        hideModal();
+      }
+    });
+  });
+}
+
+// --- Sidebar ---
+
+function renderSidebar() {
+  const list = document.getElementById('workspace-list');
+  list.innerHTML = '';
+
+  for (const ws of allWorkspaces) {
+    const item = document.createElement('div');
+    item.className = 'workspace-item' + (ws.id === currentWorkspaceId ? ' active' : '');
+    item.dataset.id = ws.id;
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'workspace-name';
+    nameSpan.textContent = ws.name;
+
+    const badge = document.createElement('span');
+    badge.className = 'msg-count';
+    badge.textContent = ws.message_count || 0;
+
+    item.appendChild(nameSpan);
+    item.appendChild(badge);
+
+    // Single-click to switch workspace (with delay to detect double-click)
+    let clickTimer = null;
+    item.addEventListener('click', (e) => {
+      if (clickTimer) {
+        clearTimeout(clickTimer);
+        clickTimer = null;
+        return;
+      }
+      clickTimer = setTimeout(() => {
+        clickTimer = null;
+        switchWorkspace(ws.id);
+      }, 250);
+    });
+
+    // Double-click nameSpan to rename
+    nameSpan.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      if (clickTimer) {
+        clearTimeout(clickTimer);
+        clickTimer = null;
+      }
+      startInlineRename(item, nameSpan, ws);
+    });
+
+    list.appendChild(item);
+  }
+}
+
+// Inline rename function for sidebar workspace items
+function startInlineRename(item, nameSpan, ws) {
+  const input = document.createElement('input');
+  input.className = 'inline-rename';
+  input.value = ws.name;
+  input.type = 'text';
+  nameSpan.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const finish = async (save) => {
+    const newName = input.value.trim();
+    const newSpan = document.createElement('span');
+    newSpan.className = 'workspace-name';
+    if (save && newName && newName !== ws.name) {
+      await updateWorkspace(ws.id, { name: newName });
+      newSpan.textContent = newName;
+      if (ws.id === currentWorkspaceId) {
+        document.getElementById('workspace-name').textContent = newName;
+      }
+      allWorkspaces = await getWorkspaces();
+    } else {
+      newSpan.textContent = ws.name;
+    }
+    input.replaceWith(newSpan);
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      finish(true);
+    }
+    if (e.key === 'Escape') {
+      finish(false);
+    }
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+// --- Workspace Switching ---
+
+async function switchWorkspace(workspaceId) {
+  currentWorkspaceId = workspaceId;
+  const ws = await getWorkspace(workspaceId);
+  if (!ws) return;
+
+  document.getElementById('workspace-name').textContent = ws.name;
+  document.getElementById('model-badge').textContent = getModelShortName(ws.model);
+
+  const messages = await getMessages(workspaceId);
+  renderMessages(messages);
+  renderSidebar();
+
+  if (rightPanelOpen) {
+    document.getElementById('system-prompt').value = ws.system_prompt || '';
+    await renderRightPanel();
+  }
+}
+
+// --- Messages ---
+
+function renderMessages(messages) {
+  const container = document.getElementById('messages');
+  const welcome = document.getElementById('welcome-msg');
+
+  // Remove all message bubbles but keep the welcome element
+  const existing = container.querySelectorAll('.message');
+  existing.forEach((el) => el.remove());
+
+  if (messages.length === 0) {
+    welcome.classList.remove('hidden');
+    return;
+  }
+
+  welcome.classList.add('hidden');
+
+  for (const msg of messages) {
+    appendMessageBubble(msg, container);
+  }
+
+  scrollToBottom();
+}
+
+function appendMessageBubble(msg, container) {
+  const div = document.createElement('div');
+
+  if (msg.role === 'user') {
+    div.className = 'message message-user';
+    div.innerHTML = `<div class="message-bubble">${escapeHtml(msg.content)}</div>`;
+  } else if (msg.role === 'assistant') {
+    div.className = 'message message-assistant';
+    div.innerHTML = `<div class="message-bubble">${formatMarkdown(msg.content)}</div>`;
+  } else if (msg.role === 'tool') {
+    div.className = 'message message-tool';
+    const toolName = msg.tool_name || 'tool';
+    const header = document.createElement('div');
+    header.className = 'tool-header';
+    header.textContent = `Tool: ${toolName}`;
+    header.addEventListener('click', () => {
+      div.classList.toggle('expanded');
+    });
+    const body = document.createElement('div');
+    body.className = 'tool-body';
+    body.innerHTML = `<pre>${escapeHtml(msg.content)}</pre>`;
+    div.appendChild(header);
+    div.appendChild(body);
+  } else if (msg.role === 'error') {
+    div.className = 'message message-error';
+    div.innerHTML = `<div class="message-bubble">${escapeHtml(msg.content)}</div>`;
+  }
+
+  container.appendChild(div);
+}
+
+// --- Streaming ---
+
+function appendStreamingDelta(delta) {
+  currentAssistantContent += delta;
+  const container = document.getElementById('messages');
+  let bubble = container.querySelector('.message.message-assistant.streaming');
+
+  if (!bubble) {
+    const welcome = document.getElementById('welcome-msg');
+    welcome.classList.add('hidden');
+    bubble = document.createElement('div');
+    bubble.className = 'message message-assistant streaming';
+    bubble.innerHTML = '<div class="message-bubble"></div>';
+    container.appendChild(bubble);
+  }
+
+  const content = bubble.querySelector('.message-bubble');
+  content.innerHTML = formatMarkdown(currentAssistantContent);
+  scrollToBottom();
+}
+
+// --- Auto-Configuration ---
+
+async function autoConfigWorkspace(userMessage) {
+  const agents = await getAgents();
+  const skills = await getSkills();
+  const guides = await getGuides();
+
+  try {
+    const response = await fetch('/api/auto-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: userMessage,
+        agents: agents.map(a => ({ id: a.id, name: a.name, description: a.description || '' })),
+        skills: skills.map(s => ({ id: s.id, name: s.name, description: s.description || '' })),
+        guides: guides.map(g => ({ id: g.id, name: g.name, description: g.description || '' })),
+      }),
+    });
+
+    if (!response.ok) return null;
+    const result = await response.json();
+
+    // Apply recommendations
+    const config = await getWorkspaceConfig(currentWorkspaceId);
+
+    for (const agentId of (result.agents || [])) {
+      if (!config.agents.includes(agentId)) {
+        await toggleWorkspaceConfig(currentWorkspaceId, 'agent', agentId);
+      }
+    }
+    for (const skillId of (result.skills || [])) {
+      if (!config.skills.includes(skillId)) {
+        await toggleWorkspaceConfig(currentWorkspaceId, 'skill', skillId);
+      }
+    }
+    for (const guideId of (result.guides || [])) {
+      if (!config.guides.includes(guideId)) {
+        await toggleWorkspaceConfig(currentWorkspaceId, 'guide', guideId);
+      }
+    }
+
+    return result;
+  } catch (err) {
+    console.error('Auto-config failed:', err);
+    return null;
+  }
+}
+
+// --- SQL Console (Cmd+K) ---
+
+function showSQLConsole() {
+  const container = document.createElement('div');
+  container.className = 'sql-console';
+
+  const presets = [
+    { label: 'Messages', sql: "SELECT role, substr(content,1,80) as content, created_at FROM messages ORDER BY created_at DESC LIMIT 20" },
+    { label: 'Agents', sql: "SELECT id, name, category FROM agents ORDER BY name" },
+    { label: 'Workspaces', sql: "SELECT id, name, model, created_at FROM workspaces" },
+    { label: 'Teams', sql: "SELECT t.name, COUNT(DISTINCT tm.agent_id) as members, COUNT(DISTINCT tk.id) as tasks FROM teams t LEFT JOIN team_members tm ON t.id=tm.team_id LEFT JOIN tasks tk ON t.id=tk.team_id GROUP BY t.name" },
+  ];
+
+  const presetBar = document.createElement('div');
+  presetBar.className = 'sql-presets';
+  for (const p of presets) {
+    const btn = document.createElement('button');
+    btn.className = 'sql-preset-btn';
+    btn.textContent = p.label;
+    btn.addEventListener('click', () => {
+      sqlInput.value = p.sql;
+    });
+    presetBar.appendChild(btn);
+  }
+  container.appendChild(presetBar);
+
+  const sqlInput = document.createElement('textarea');
+  sqlInput.className = 'sql-input';
+  sqlInput.placeholder = 'SELECT * FROM messages LIMIT 10';
+  sqlInput.rows = 3;
+  container.appendChild(sqlInput);
+
+  const resultArea = document.createElement('div');
+  resultArea.className = 'sql-result';
+  container.appendChild(resultArea);
+
+  showModal({
+    title: 'DuckDB SQL Console',
+    body: container,
+    buttons: [
+      { label: 'Close', class: 'modal-btn-secondary' },
+      {
+        label: 'Run Query',
+        class: 'modal-btn-primary',
+        close: false,
+        onClick: async () => {
+          const sql = sqlInput.value.trim();
+          if (!sql) return;
+          resultArea.innerHTML = '<span style="color:var(--text-tertiary)">Running...</span>';
+          try {
+            const { runSQL } = await import('./db.js');
+            const rows = await runSQL(sql);
+            if (!rows || rows.length === 0) {
+              resultArea.innerHTML = '<span style="color:var(--text-tertiary)">No results</span>';
+              return;
+            }
+            const cols = Object.keys(rows[0]);
+            let html = '<table class="sql-table"><thead><tr>';
+            for (const col of cols) html += '<th>' + escapeHtml(col) + '</th>';
+            html += '</tr></thead><tbody>';
+            for (const row of rows) {
+              html += '<tr>';
+              for (const col of cols) {
+                const val = row[col];
+                html += '<td>' + escapeHtml(String(val ?? '')) + '</td>';
+              }
+              html += '</tr>';
+            }
+            html += '</tbody></table>';
+            resultArea.innerHTML = html;
+          } catch (err) {
+            resultArea.innerHTML = '<span style="color:var(--red)">' + escapeHtml(err.message) + '</span>';
+          }
+        },
+      },
+    ],
+  });
+
+  // Enter to run
+  sqlInput.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      document.querySelector('.modal-btn-primary')?.click();
+    }
+  });
+}
+
+// --- Send Message ---
+
+async function handleSendMessage() {
+  const textarea = document.getElementById('message-input');
+  const text = textarea.value.trim();
+  if (!text || isStreaming) return;
+
+  textarea.value = '';
+  textarea.style.height = 'auto';
+  updateSendButton();
+  closeMentionAutocomplete();
+
+  isStreaming = true;
+  setStreamingUI(true);
+
+  // Auto-configure workspace on first message
+  const existingMessages = await getMessages(currentWorkspaceId);
+  if (existingMessages.length === 0) {
+    // Show auto-config indicator
+    const container = document.getElementById('messages');
+    document.getElementById('welcome-msg').classList.add('hidden');
+    const configMsg = document.createElement('div');
+    configMsg.className = 'message message-system auto-config-msg';
+    configMsg.innerHTML = '<div class="message-bubble"><span class="auto-config-spinner"></span> Analyzing your intent and configuring workspace...</div>';
+    container.appendChild(configMsg);
+    scrollToBottom();
+
+    const result = await autoConfigWorkspace(text);
+
+    // Replace config message with result
+    if (result && result.reasoning) {
+      configMsg.innerHTML = `<div class="message-bubble auto-config-done">✨ ${escapeHtml(result.reasoning)}</div>`;
+    } else {
+      configMsg.remove();
+    }
+
+    // Refresh right panel if open
+    if (rightPanelOpen) {
+      renderRightPanel();
+    }
+  }
+
+  // Add user message to DB and render
+  await addMessage(currentWorkspaceId, 'user', text);
+  const container = document.getElementById('messages');
+  document.getElementById('welcome-msg').classList.add('hidden');
+  appendMessageBubble({ role: 'user', content: text }, container);
+  scrollToBottom();
+
+  // Compose system prompt
+  const ws = await getWorkspace(currentWorkspaceId);
+  const composedPrompt = await composeSystemPrompt(ws);
+
+  // Check for @agent mention
+  let finalPrompt = composedPrompt;
+  const agents = await getAgents();
+  const mentionedAgent = extractMentionedAgent(text, agents);
+  if (mentionedAgent && mentionedAgent.system_prompt) {
+    finalPrompt = mentionedAgent.system_prompt + '\n\n' + composedPrompt;
+  }
+
+  // Get session ID
+  const sessionId = await getSessionId(currentWorkspaceId);
+
+  currentAssistantContent = '';
+
+  try {
+    await sendChatMessage(text, sessionId, finalPrompt, ws.model, async (event) => {
+      switch (event.type) {
+        case 'session':
+          await updateWorkspace(currentWorkspaceId, { session_id: event.session_id });
+          break;
+
+        case 'text_delta':
+          appendStreamingDelta(event.content);
+          break;
+
+        case 'tool_start': {
+          const toolDiv = document.createElement('div');
+          toolDiv.className = 'message message-tool';
+          toolDiv.dataset.tool = event.tool;
+          const header = document.createElement('div');
+          header.className = 'tool-header';
+          header.textContent = `Tool: ${event.tool}`;
+          header.addEventListener('click', () => toolDiv.classList.toggle('expanded'));
+          const body = document.createElement('div');
+          body.className = 'tool-body';
+          body.innerHTML = `<pre>${escapeHtml(event.input || '')}</pre>`;
+          toolDiv.appendChild(header);
+          toolDiv.appendChild(body);
+          container.appendChild(toolDiv);
+          scrollToBottom();
+          break;
+        }
+
+        case 'tool_result': {
+          const lastTool = container.querySelector('.message.message-tool:last-of-type .tool-body pre');
+          if (lastTool) {
+            lastTool.textContent += '\n--- Result ---\n' + (event.output || '');
+          }
+          break;
+        }
+
+        case 'done':
+          if (currentAssistantContent) {
+            // Finalize the streaming bubble
+            const streaming = container.querySelector('.message.message-assistant.streaming');
+            if (streaming) streaming.classList.remove('streaming');
+            await addMessage(currentWorkspaceId, 'assistant', currentAssistantContent);
+          }
+          if (event.cost_usd) {
+            updateCostDisplay(event.cost_usd);
+          }
+          // Refresh workspace list to update message counts
+          allWorkspaces = await getWorkspaces();
+          renderSidebar();
+          break;
+
+        case 'error':
+          appendMessageBubble({ role: 'error', content: event.message }, container);
+          await addMessage(currentWorkspaceId, 'error', event.message);
+          scrollToBottom();
+          break;
+      }
+    });
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      const errMsg = err.message || 'Unknown error';
+      appendMessageBubble({ role: 'error', content: errMsg }, container);
+      await addMessage(currentWorkspaceId, 'error', errMsg);
+      scrollToBottom();
+    }
+    // Finalize any partial streaming content
+    const streaming = container.querySelector('.message.message-assistant.streaming');
+    if (streaming) {
+      streaming.classList.remove('streaming');
+      if (currentAssistantContent) {
+        await addMessage(currentWorkspaceId, 'assistant', currentAssistantContent);
+      }
+    }
+  } finally {
+    isStreaming = false;
+    currentAssistantContent = '';
+    setStreamingUI(false);
+  }
+}
+
+async function composeSystemPrompt(ws) {
+  const parts = [];
+  if (ws.system_prompt) {
+    parts.push(ws.system_prompt);
+  }
+
+  const config = await getWorkspaceConfig(currentWorkspaceId);
+
+  if (config.agents.length > 0) {
+    const agents = await getAgents();
+    for (const agent of agents) {
+      if (config.agents.includes(agent.id) && agent.system_prompt) {
+        parts.push(`\n\n## Agent: ${agent.name}\n${agent.system_prompt}`);
+      }
+    }
+  }
+
+  if (config.skills.length > 0) {
+    const skills = await getSkills();
+    for (const skill of skills) {
+      if (config.skills.includes(skill.id) && skill.prompt_template) {
+        parts.push(`\n\n## Available Skill: ${skill.name}\n${skill.prompt_template}`);
+      }
+    }
+  }
+
+  if (config.guides.length > 0) {
+    const guides = await getGuides();
+    for (const guide of guides) {
+      if (config.guides.includes(guide.id) && guide.content) {
+        parts.push(`\n\n## Reference: ${guide.name}\n${guide.content}`);
+      }
+    }
+  }
+
+  return parts.join('');
+}
+
+function setStreamingUI(streaming) {
+  const sendBtn = document.getElementById('send-btn');
+  const textarea = document.getElementById('message-input');
+
+  if (streaming) {
+    sendBtn.disabled = true;
+    sendBtn.classList.add('loading');
+    textarea.disabled = true;
+    textarea.placeholder = 'Claude is thinking...';
+  } else {
+    sendBtn.disabled = false;
+    sendBtn.classList.remove('loading');
+    textarea.disabled = false;
+    textarea.placeholder = 'Message Claude... (@ to mention agent)';
+    textarea.focus();
+    updateSendButton();
+  }
+}
+
+function updateSendButton() {
+  const textarea = document.getElementById('message-input');
+  const sendBtn = document.getElementById('send-btn');
+  sendBtn.disabled = !textarea.value.trim() || isStreaming;
+}
+
+function updateCostDisplay(costUsd) {
+  const el = document.getElementById('cost-display');
+  const current = parseFloat(el.dataset.total || '0');
+  const total = current + costUsd;
+  el.dataset.total = total;
+  el.textContent = `$${total.toFixed(4)}`;
+}
+
+// --- Right Panel ---
+
+async function renderRightPanel() {
+  const panelContent = document.getElementById('panel-content');
+  panelContent.innerHTML = '';
+
+  const sections = [
+    { id: 'agents', icon: '🤖', title: 'Agents' },
+    { id: 'skills', icon: '⚡', title: 'Skills' },
+    { id: 'guides', icon: '📖', title: 'Guides' },
+    { id: 'teams', icon: '👥', title: 'Teams' },
+  ];
+
+  for (const section of sections) {
+    const isOpen = openSections.has(section.id);
+
+    const sectionEl = document.createElement('div');
+    sectionEl.className = 'panel-section' + (isOpen ? '' : ' collapsed');
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'panel-section-header';
+
+    const chevron = document.createElement('span');
+    chevron.className = 'section-chevron';
+    chevron.textContent = '▸';
+
+    const icon = document.createElement('span');
+    icon.className = 'section-icon';
+    icon.textContent = section.icon;
+
+    const title = document.createElement('span');
+    title.className = 'section-title';
+    title.textContent = section.title;
+
+    header.appendChild(chevron);
+    header.appendChild(icon);
+    header.appendChild(title);
+
+    header.addEventListener('click', () => {
+      if (openSections.has(section.id)) {
+        openSections.delete(section.id);
+      } else {
+        openSections.add(section.id);
+      }
+      renderRightPanel();
+    });
+
+    sectionEl.appendChild(header);
+
+    // Body (only render content if open)
+    const body = document.createElement('div');
+    body.className = 'panel-section-body';
+    sectionEl.appendChild(body);
+    panelContent.appendChild(sectionEl);
+
+    if (isOpen) {
+      if (section.id === 'teams') {
+        await renderTeamPanel(body, currentWorkspaceId, currentTeamId, {
+          showModal,
+          hideModal,
+          showConfirmModal,
+          showInputModal,
+          escapeHtml,
+          onTeamSelect: (teamId) => {
+            currentTeamId = teamId;
+            renderRightPanel();
+          },
+          onRefresh: () => renderRightPanel(),
+        });
+      } else {
+        await renderConfigSection(body, section.id);
+      }
+    }
+  }
+}
+
+async function renderConfigSection(container, sectionId) {
+  const config = await getWorkspaceConfig(currentWorkspaceId);
+  let items = [];
+  let activeIds = [];
+
+  if (sectionId === 'agents') {
+    items = await getAgents();
+    activeIds = config.agents;
+  } else if (sectionId === 'skills') {
+    items = await getSkills();
+    activeIds = config.skills;
+  } else if (sectionId === 'guides') {
+    items = await getGuides();
+    activeIds = config.guides;
+  }
+
+  if (items.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'panel-empty';
+    empty.textContent = `No ${sectionId} available.`;
+    container.appendChild(empty);
+    return;
+  }
+
+  // Add count badge to the section header
+  const headerTitle = container.parentElement.querySelector('.section-title');
+  const activeCount = items.filter(item => activeIds.includes(item.id)).length;
+  if (activeCount > 0) {
+    const existingBadge = headerTitle.parentElement.querySelector('.section-badge');
+    if (existingBadge) existingBadge.remove();
+    const badge = document.createElement('span');
+    badge.className = 'section-badge';
+    badge.textContent = activeCount;
+    headerTitle.parentElement.appendChild(badge);
+  }
+
+  for (const item of items) {
+    const card = document.createElement('div');
+    card.className = 'config-card';
+
+    const info = document.createElement('div');
+    info.className = 'config-info';
+
+    const icon = document.createElement('span');
+    icon.className = 'config-icon';
+    icon.textContent = item.icon || '';
+
+    const name = document.createElement('span');
+    name.className = 'config-name';
+    name.textContent = item.name;
+
+    info.appendChild(icon);
+    info.appendChild(name);
+
+    if (item.description) {
+      const desc = document.createElement('p');
+      desc.className = 'config-desc';
+      desc.textContent = item.description;
+      info.appendChild(desc);
+    }
+
+    const toggle = document.createElement('label');
+    toggle.className = 'toggle-switch';
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = activeIds.includes(item.id);
+
+    const slider = document.createElement('span');
+    slider.className = 'toggle-slider';
+
+    toggle.appendChild(checkbox);
+    toggle.appendChild(slider);
+
+    const itemType = sectionId.replace(/s$/, '');
+    checkbox.addEventListener('change', async () => {
+      await toggleWorkspaceConfig(currentWorkspaceId, itemType, item.id);
+      renderRightPanel();
+    });
+
+    card.appendChild(info);
+    card.appendChild(toggle);
+    container.appendChild(card);
+  }
+}
+
+function toggleRightPanel() {
+  const panel = document.getElementById('right-panel');
+  rightPanelOpen = !rightPanelOpen;
+  document.getElementById('app').classList.toggle('right-panel-open', rightPanelOpen);
+
+  if (rightPanelOpen) {
+    panel.classList.remove('hidden');
+    getWorkspace(currentWorkspaceId).then((ws) => {
+      if (ws) {
+        document.getElementById('system-prompt').value = ws.system_prompt || '';
+      }
+    });
+    renderRightPanel();
+  } else {
+    panel.classList.add('hidden');
+  }
+}
+
+// --- Event Listeners ---
+
+function setupEventListeners() {
+  const sendBtn = document.getElementById('send-btn');
+  const textarea = document.getElementById('message-input');
+  const newWsBtn = document.getElementById('new-workspace');
+  const settingsBtn = document.getElementById('settings-toggle');
+  const closePanel = document.getElementById('close-panel');
+  const clearBtn = document.getElementById('clear-chat');
+  const sidebarToggle = document.getElementById('sidebar-toggle');
+  const systemPrompt = document.getElementById('system-prompt');
+  const workspaceName = document.getElementById('workspace-name');
+
+  // Send message
+  sendBtn.addEventListener('click', handleSendMessage);
+
+  // Textarea: Enter to send, Shift+Enter for newline, auto-grow
+  textarea.addEventListener('keydown', (e) => {
+    if (isMentionActive()) {
+      handleMentionKeydown(e, textarea);
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  });
+
+  textarea.addEventListener('input', () => {
+    textarea.style.height = 'auto';
+    textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+    updateSendButton();
+    handleMentionInput(textarea, getAgents);
+  });
+
+  // New workspace - using modal
+  newWsBtn.addEventListener('click', () => {
+    showInputModal('New Workspace', [
+      { name: 'name', label: 'Name', placeholder: 'My Workspace' },
+      { name: 'prompt', label: 'System Prompt', type: 'textarea', placeholder: 'You are a helpful assistant...', value: 'You are Claude, a helpful AI assistant.' },
+    ], async (values) => {
+      if (!values.name) return;
+      const id = await createWorkspace(values.name, values.prompt);
+      allWorkspaces = await getWorkspaces();
+      renderSidebar();
+      await switchWorkspace(id);
+    });
+  });
+
+  // Settings panel toggle
+  settingsBtn.addEventListener('click', toggleRightPanel);
+
+  // Model selector
+  const modelBadge = document.getElementById('model-badge');
+  modelBadge.style.cursor = 'pointer';
+  modelBadge.addEventListener('click', async () => {
+    const ws = await getWorkspace(currentWorkspaceId);
+    const models = [
+      { id: 'claude-sonnet-4-5-20250929', label: 'sonnet', color: 'var(--purple)' },
+      { id: 'claude-haiku-4-5-20251001', label: 'haiku', color: 'var(--green)' },
+      { id: 'claude-opus-4-6', label: 'opus', color: 'var(--orange)' },
+    ];
+    const body = document.createElement('div');
+    body.className = 'model-select-list';
+    for (const m of models) {
+      const item = document.createElement('div');
+      item.className = 'model-select-item' + (ws.model === m.id ? ' active' : '');
+      item.innerHTML = `<span class="model-dot" style="background:${m.color}"></span><span class="model-label">${m.label}</span>`;
+      item.addEventListener('click', async () => {
+        await updateWorkspace(currentWorkspaceId, { model: m.id });
+        document.getElementById('model-badge').textContent = m.label;
+        hideModal();
+      });
+      body.appendChild(item);
+    }
+    showModal({ title: 'Select Model', body, buttons: [{ label: 'Cancel', class: 'modal-btn-secondary' }] });
+  });
+
+  // Close panel
+  closePanel.addEventListener('click', () => {
+    rightPanelOpen = false;
+    const panel = document.getElementById('right-panel');
+    panel.classList.add('hidden');
+    document.getElementById('app').classList.remove('right-panel-open');
+  });
+
+  // Clear chat - using confirm modal
+  clearBtn.addEventListener('click', () => {
+    showConfirmModal('Clear Chat', 'Delete all messages in this workspace? This cannot be undone.', async () => {
+      await clearMessages(currentWorkspaceId);
+      await updateWorkspace(currentWorkspaceId, { session_id: null });
+      const messages = await getMessages(currentWorkspaceId);
+      renderMessages(messages);
+      allWorkspaces = await getWorkspaces();
+      renderSidebar();
+    });
+  });
+
+  // Delete workspace
+  const deleteWsBtn = document.getElementById('delete-workspace');
+  if (deleteWsBtn) {
+    deleteWsBtn.addEventListener('click', () => {
+      if (allWorkspaces.length <= 1) {
+        showModal({ title: 'Cannot Delete', body: '<p>You need at least one workspace.</p>', buttons: [{ label: 'OK', class: 'modal-btn-secondary' }] });
+        return;
+      }
+      showConfirmModal('Delete Workspace', 'Permanently delete this workspace and all its data?', async () => {
+        const idToDelete = currentWorkspaceId;
+        await deleteWorkspace(idToDelete);
+        allWorkspaces = await getWorkspaces();
+        currentWorkspaceId = allWorkspaces[0].id;
+        renderSidebar();
+        await switchWorkspace(currentWorkspaceId);
+      });
+    });
+  }
+
+  // Sidebar toggle (mobile)
+  sidebarToggle.addEventListener('click', () => {
+    document.getElementById('sidebar').classList.toggle('open');
+  });
+
+  // Panel resize handle
+  const resizeHandle = document.getElementById('resize-handle');
+  if (resizeHandle) {
+    let isResizing = false;
+    let startX = 0;
+    let startWidth = 0;
+
+    resizeHandle.addEventListener('mousedown', (e) => {
+      isResizing = true;
+      startX = e.clientX;
+      startWidth = document.getElementById('right-panel').offsetWidth;
+      resizeHandle.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      const diff = startX - e.clientX;
+      const newWidth = Math.min(Math.max(startWidth + diff, 200), 600);
+      document.documentElement.style.setProperty('--right-panel-width', newWidth + 'px');
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (!isResizing) return;
+      isResizing = false;
+      resizeHandle.classList.remove('dragging');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    });
+  }
+
+  // System prompt editing
+  let promptDebounce = null;
+  systemPrompt.addEventListener('input', () => {
+    clearTimeout(promptDebounce);
+    promptDebounce = setTimeout(async () => {
+      await updateWorkspace(currentWorkspaceId, {
+        system_prompt: systemPrompt.value,
+      });
+    }, 500);
+  });
+
+  // Escape to abort streaming, Cmd+K for SQL console
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && isStreaming) {
+      abortCurrentRequest();
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      e.preventDefault();
+      showSQLConsole();
+    }
+  });
+
+  // Double-click workspace name to rename - contenteditable
+  workspaceName.addEventListener('dblclick', async () => {
+    const ws = await getWorkspace(currentWorkspaceId);
+    if (!ws) return;
+
+    workspaceName.contentEditable = 'true';
+    workspaceName.focus();
+
+    // Select all text
+    const range = document.createRange();
+    range.selectNodeContents(workspaceName);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    const finish = async () => {
+      workspaceName.contentEditable = 'false';
+      const newName = workspaceName.textContent.trim();
+      const currentWs = await getWorkspace(currentWorkspaceId);
+      if (newName && newName !== currentWs.name) {
+        await updateWorkspace(currentWorkspaceId, { name: newName });
+        allWorkspaces = await getWorkspaces();
+        renderSidebar();
+      } else {
+        workspaceName.textContent = currentWs.name;
+      }
+    };
+
+    const keyHandler = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        workspaceName.removeEventListener('keydown', keyHandler);
+        finish();
+      }
+      if (e.key === 'Escape') {
+        workspaceName.removeEventListener('keydown', keyHandler);
+        getWorkspace(currentWorkspaceId).then((currentWs) => {
+          if (currentWs) workspaceName.textContent = currentWs.name;
+        });
+        workspaceName.contentEditable = 'false';
+      }
+    };
+
+    workspaceName.addEventListener('keydown', keyHandler);
+    workspaceName.addEventListener('blur', finish, { once: true });
+  });
+}
+
+// --- Boot ---
+
+async function boot() {
+  try {
+    await initDB();
+    document.getElementById('loading-overlay').classList.add('hidden');
+
+    allWorkspaces = await getWorkspaces();
+    // initDB already creates a Default workspace if none exist,
+    // so allWorkspaces should always have at least one entry.
+    if (allWorkspaces.length === 0) {
+      await createWorkspace('Default', 'You are Claude, a helpful AI assistant.', 'claude-sonnet-4-5-20250929');
+      allWorkspaces = await getWorkspaces();
+    }
+
+    currentWorkspaceId = allWorkspaces[0].id;
+    renderSidebar();
+    await switchWorkspace(currentWorkspaceId);
+    setupEventListeners();
+
+    // Pulse settings button hint for new users
+    if (allWorkspaces.length === 1 && allWorkspaces[0].name === 'Default') {
+      const settingsBtn = document.getElementById('settings-toggle');
+      settingsBtn.classList.add('pulse-hint');
+      settingsBtn.addEventListener('click', () => settingsBtn.classList.remove('pulse-hint'), { once: true });
+
+      // Add pulse animation style if not exists
+      if (!document.getElementById('pulse-hint-style')) {
+        const style = document.createElement('style');
+        style.id = 'pulse-hint-style';
+        style.textContent = `
+          .pulse-hint {
+            animation: pulse-ring 2s ease-in-out infinite;
+          }
+          @keyframes pulse-ring {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(10,132,255,0.4); }
+            50% { box-shadow: 0 0 0 6px rgba(10,132,255,0); }
+          }
+        `;
+        document.head.appendChild(style);
+      }
+    }
+  } catch (err) {
+    console.error('Boot failed:', err);
+    const overlay = document.getElementById('loading-overlay');
+    overlay.innerHTML = `<p style="color:#FF453A">Failed to initialize: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+boot();

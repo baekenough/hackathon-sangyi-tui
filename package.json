@@ -1,0 +1,12 @@
+{
+  "name": "claude-agent-tui",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.73.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5"
+  }
+}
