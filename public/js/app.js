@@ -930,11 +930,13 @@ function runProjectInSandbox(files, projectContainer) {
     const allCss = cssFiles.map(f => f.code).join('\n');
     const allJs = jsFiles.map(f => f.code).join('\n;\n');
 
-    // Strip import/export statements (won't work in browser without bundler)
+    // Strip import/export statements and convert const/let to var (allows redeclaration across files)
     const cleanedJs = allJs
       .replace(/^import\s+.*?(?:from\s+['"].*?['"]|['"].*?['"])\s*;?\s*$/gm, '')
       .replace(/^export\s+default\s+/gm, '')
-      .replace(/^export\s+/gm, '');
+      .replace(/^export\s+/gm, '')
+      .replace(/\bconst\s+/g, 'var ')
+      .replace(/\blet\s+/g, 'var ');
 
     const autoRender = `
 var _components = [typeof App!=='undefined'&&App,typeof TodoApp!=='undefined'&&TodoApp,typeof Main!=='undefined'&&Main,typeof Root!=='undefined'&&Root,typeof Counter!=='undefined'&&Counter,typeof Home!=='undefined'&&Home].filter(Boolean);
