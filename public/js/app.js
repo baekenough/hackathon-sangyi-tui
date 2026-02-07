@@ -140,6 +140,15 @@ function detectFilename(code, lang) {
     ruby:'rb', yaml:'yaml', yml:'yml', xml:'xml', markdown:'md', md:'md',
     txt:'txt', code:'txt'
   };
+
+  // Detect HTML from content if lang is empty or 'txt'
+  if (!lang || lang === 'txt' || lang === 'code') {
+    const trimmedCode = code.trimStart();
+    if (trimmedCode.startsWith('<!DOCTYPE') || trimmedCode.startsWith('<html')) {
+      return 'index.html';
+    }
+  }
+
   const ext = extMap[lang.toLowerCase()] || lang || 'txt';
   // Try to detect from first-line comment: // App.jsx, /* styles.css */, # main.py
   const firstLine = code.split('\n')[0].trim();
@@ -873,9 +882,28 @@ function runProjectInSandbox(files, projectContainer) {
   });
 
   // Build HTML content from files
-  let htmlFile = files.find(f => f.lang === 'html');
+  // Better HTML detection: check lang, filename, and content patterns
+  let htmlFile = files.find(f => f.lang === 'html')
+    || files.find(f => f.filename && (f.filename.endsWith('.html') || f.filename.endsWith('.htm')))
+    || files.find(f => {
+      const trimmed = f.code.trimStart();
+      return trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html');
+    });
+
   const cssFiles = files.filter(f => f.lang === 'css');
   const jsFiles = files.filter(f => ['javascript', 'js', 'jsx', 'tsx', 'typescript', 'ts'].includes(f.lang));
+
+  // Detect if this is a React project
+  const isReactProject = files.some(f => {
+    const langLower = (f.lang || '').toLowerCase();
+    return ['jsx', 'tsx'].includes(langLower)
+      || f.code.includes('from \'react\'')
+      || f.code.includes('from "react"')
+      || f.code.includes('import React')
+      || f.code.includes('useState')
+      || f.code.includes('useEffect')
+      || f.code.includes('createRoot');
+  });
 
   let htmlContent = '';
 
@@ -897,7 +925,53 @@ function runProjectInSandbox(files, projectContainer) {
         htmlContent += `<script>${jsStr}<\/script>`;
       }
     }
+  } else if (jsFiles.length > 0 && isReactProject) {
+    // React project: use Babel + React CDN
+    const allCss = cssFiles.map(f => f.code).join('\n');
+    const allJs = jsFiles.map(f => f.code).join('\n;\n');
+
+    // Strip import/export statements (won't work in browser without bundler)
+    const cleanedJs = allJs
+      .replace(/^import\s+.*?(?:from\s+['"].*?['"]|['"].*?['"])\s*;?\s*$/gm, '')
+      .replace(/^export\s+default\s+/gm, '')
+      .replace(/^export\s+/gm, '');
+
+    htmlContent = `<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"><\/script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"><\/script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"><\/script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 16px; }
+  * { box-sizing: border-box; }
+  ${allCss}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="env,react,typescript">
+${cleanedJs}
+
+// Auto-render: find and render the main component
+const _components = [
+  typeof App !== 'undefined' && App,
+  typeof TodoApp !== 'undefined' && TodoApp,
+  typeof Main !== 'undefined' && Main,
+  typeof Root !== 'undefined' && Root,
+  typeof Counter !== 'undefined' && Counter
+].filter(Boolean);
+
+if (_components.length > 0) {
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(React.createElement(_components[0]));
+} else {
+  console.error('No main component found (tried: App, TodoApp, Main, Root, Counter)');
+}
+<\/script>
+</body></html>`;
   } else if (jsFiles.length > 0) {
+    // Plain JavaScript fallback (non-React)
     const allJs = jsFiles.map(f => f.code).join('\n;\n');
     const allCss = cssFiles.map(f => f.code).join('\n');
     htmlContent = `<!DOCTYPE html>
@@ -926,7 +1000,16 @@ function runProjectInSandbox(files, projectContainer) {
   }
 
   const frame = preview.querySelector('.file-tree-preview-frame');
-  frame.srcdoc = htmlContent;
+
+  // For React projects, use blob URL to allow CDN access (remove sandbox restriction)
+  if (isReactProject) {
+    frame.removeAttribute('sandbox');
+    const blob = new Blob([htmlContent], { type: 'text/html' });
+    frame.src = URL.createObjectURL(blob);
+  } else {
+    // Non-React projects can use srcdoc with sandbox
+    frame.srcdoc = htmlContent;
+  }
 
   // Slide open with requestAnimationFrame for smooth animation
   requestAnimationFrame(() => {
