@@ -52,8 +52,20 @@ function formatMarkdown(text) {
   let html = escapeHtml(text);
 
   // Code blocks: ```...```
-  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_match, _lang, code) => {
-    return `<pre><code>${code.trim()}</code></pre>`;
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_match, lang, code) => {
+    const trimmed = code.trim();
+    const encoded = btoa(unescape(encodeURIComponent(trimmed)));
+    const langLabel = lang || 'code';
+    const runnable = ['html', 'javascript', 'js', 'css', 'typescript', 'ts'].includes(lang.toLowerCase());
+    return `<div class="code-block-wrapper" data-lang="${langLabel}" data-code="${encoded}">` +
+      `<div class="code-block-toolbar">` +
+      `<span class="code-block-lang">${langLabel}</span>` +
+      `<div class="code-block-actions">` +
+      `<button class="code-action-btn" data-action="copy" title="Copy to clipboard">Copy</button>` +
+      `<button class="code-action-btn" data-action="download" title="Download file">Export</button>` +
+      (runnable ? `<button class="code-action-btn" data-action="run" title="Run in sandbox">▶ Run</button>` : '') +
+      `</div></div>` +
+      `<pre><code>${trimmed}</code></pre></div>`;
   });
 
   // Inline code: `...`
@@ -65,8 +77,8 @@ function formatMarkdown(text) {
   // Italic: *...*
   html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
 
-  // Newlines to <br> (skip inside <pre>)
-  const parts = html.split(/(<pre><code>[\s\S]*?<\/code><\/pre>)/g);
+  // Newlines to <br> (skip inside code-block-wrapper)
+  const parts = html.split(/(<div class="code-block-wrapper"[\s\S]*?<\/code><\/pre><\/div>)/g);
   html = parts
     .map((part, i) => {
       if (i % 2 === 1) return part; // inside <pre>
@@ -682,6 +694,101 @@ async function handleSendMessage() {
   }
 }
 
+async function runTeamExecution(team, tasks, members) {
+  const container = document.getElementById('messages');
+  document.getElementById('welcome-msg').classList.add('hidden');
+
+  // Show team execution header
+  const headerDiv = document.createElement('div');
+  headerDiv.className = 'message message-system';
+  headerDiv.innerHTML = `<div class="message-bubble">🚀 Running team "<strong>${escapeHtml(team.name)}</strong>" — ${tasks.length} task(s) in parallel</div>`;
+  container.appendChild(headerDiv);
+  scrollToBottom();
+
+  // Build agent map from members
+  const agentMap = {};
+  const agents = await getAgents();
+  for (const m of members) {
+    const agent = agents.find(a => a.id === m.agent_id);
+    if (agent) agentMap[m.agent_id] = agent;
+  }
+
+  // Get workspace info
+  const ws = await getWorkspace(currentWorkspaceId);
+  const sessionId = await getSessionId(currentWorkspaceId);
+
+  // Fire all tasks in parallel
+  const promises = tasks.map(async (task) => {
+    // Find assigned agent (use first member if no assignee)
+    const assigneeId = task.assignee_id || (members[0] ? members[0].agent_id : null);
+    const agent = assigneeId ? agentMap[assigneeId] : null;
+    const agentName = agent ? agent.name : 'claude';
+    const agentIcon = agent ? (agent.icon || '🤖') : '✦';
+
+    // Create agent-labeled bubble
+    const bubbleDiv = document.createElement('div');
+    bubbleDiv.className = 'message message-assistant message-subagent';
+
+    const labelDiv = document.createElement('div');
+    labelDiv.className = 'subagent-label';
+    labelDiv.innerHTML = `<span class="subagent-icon">${agentIcon}</span> <span class="subagent-name">${escapeHtml(agentName)}</span> <span class="subagent-task">${escapeHtml(task.subject)}</span>`;
+
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-bubble';
+    contentDiv.innerHTML = '<span class="auto-config-spinner"></span> Working...';
+
+    bubbleDiv.appendChild(labelDiv);
+    bubbleDiv.appendChild(contentDiv);
+    container.appendChild(bubbleDiv);
+    scrollToBottom();
+
+    // Update task status to in_progress
+    await updateTask(task.id, { status: 'in_progress' });
+
+    // Build prompt: task description + agent system prompt
+    const taskPrompt = `Task: ${task.subject}\n${task.description || ''}`;
+    let systemPrompt = agent && agent.system_prompt ? agent.system_prompt : '';
+    if (ws.system_prompt) {
+      systemPrompt = systemPrompt ? systemPrompt + '\n\n' + ws.system_prompt : ws.system_prompt;
+    }
+
+    try {
+      let content = '';
+      await sendChatMessage(taskPrompt, sessionId, systemPrompt, ws.model, (event) => {
+        if (event.type === 'text_delta') {
+          content += event.content;
+          contentDiv.innerHTML = formatMarkdown(content);
+          scrollToBottom();
+        }
+      });
+
+      // Save to DB
+      await addMessage(currentWorkspaceId, 'assistant', content);
+
+      // Update task status to completed
+      await updateTask(task.id, { status: 'completed' });
+
+      return { task: task.subject, status: 'completed' };
+    } catch (err) {
+      contentDiv.innerHTML = `<span style="color:var(--red)">Error: ${escapeHtml(err.message)}</span>`;
+      return { task: task.subject, status: 'failed', error: err.message };
+    }
+  });
+
+  const results = await Promise.allSettled(promises);
+
+  // Show summary
+  const completedCount = results.filter(r => r.status === 'fulfilled' && r.value.status === 'completed').length;
+  const summaryDiv = document.createElement('div');
+  summaryDiv.className = 'message message-system';
+  summaryDiv.innerHTML = `<div class="message-bubble auto-config-done">✅ Team execution complete: ${completedCount}/${tasks.length} tasks succeeded</div>`;
+  container.appendChild(summaryDiv);
+  scrollToBottom();
+
+  // Refresh right panel to show updated task statuses
+  if (rightPanelOpen) renderRightPanel();
+}
+
 async function composeSystemPrompt(ws) {
   const parts = [];
   if (ws.system_prompt) {
@@ -822,6 +929,7 @@ async function renderRightPanel() {
             renderRightPanel();
           },
           onRefresh: () => renderRightPanel(),
+          onRunTeam: (team, tasks, members) => runTeamExecution(team, tasks, members),
         });
       } else {
         await renderConfigSection(body, section.id);

@@ -1649,6 +1649,67 @@ textarea:focus-visible {
 .task-item:hover .task-delete-btn { opacity: 1; }
 .task-delete-btn:hover { color: var(--red); }
 
+/* Run Team Button */
+.team-run-btn {
+  background: linear-gradient(135deg, rgba(52, 199, 89, 0.3), rgba(48, 209, 88, 0.2));
+  border: 1px solid rgba(52, 199, 89, 0.4);
+  color: #34c759;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.2s;
+  width: 100%;
+  margin-bottom: 8px;
+  font-family: var(--font-sans);
+}
+.team-run-btn:hover {
+  background: linear-gradient(135deg, rgba(52, 199, 89, 0.4), rgba(48, 209, 88, 0.3));
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(52, 199, 89, 0.2);
+}
+
+/* Delete Team Button */
+.team-delete-btn {
+  background: rgba(255, 69, 58, 0.1);
+  border: 1px solid rgba(255, 69, 58, 0.3);
+  color: #FF453A;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.2s;
+  width: 100%;
+  font-family: var(--font-sans);
+}
+.team-delete-btn:hover {
+  background: rgba(255, 69, 58, 0.2);
+  transform: translateY(-1px);
+}
+
+/* Subagent label on response bubble */
+.message-subagent .subagent-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  opacity: 0.8;
+}
+.subagent-icon {
+  font-size: 14px;
+}
+.subagent-name {
+  font-weight: 600;
+  color: var(--accent);
+}
+.subagent-task {
+  color: rgba(255,255,255,0.5);
+  font-style: italic;
+}
+
 /* === Panel Actions === */
 .panel-actions { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 0.5px solid var(--glass-border); }
 .panel-action-btn { width: 100%; padding: 8px; border-radius: 8px; border: none; font-size: 13px; font-weight: 500; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: all 0.15s; font-family: var(--font-sans); }

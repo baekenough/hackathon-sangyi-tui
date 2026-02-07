@@ -176,6 +176,22 @@ async function renderTeamDetail(teamPanel, workspaceId, teamId, callbacks) {
   const actions = document.createElement('div');
   actions.className = 'team-detail-actions';
 
+  const runBtn = document.createElement('button');
+  runBtn.className = 'team-run-btn';
+  runBtn.textContent = '▶ Run Team';
+  runBtn.addEventListener('click', async () => {
+    const tasks = await getTasks(teamId);
+    const members = await getTeamMembers(teamId);
+    if (tasks.length === 0) {
+      callbacks.showConfirmModal('No Tasks', 'Add tasks before running the team.', () => {});
+      return;
+    }
+    if (callbacks.onRunTeam) {
+      callbacks.onRunTeam(team, tasks, members);
+    }
+  });
+  actions.appendChild(runBtn);
+
   const deleteBtn = document.createElement('button');
   deleteBtn.className = 'team-delete-btn';
   deleteBtn.textContent = 'Delete Team';
