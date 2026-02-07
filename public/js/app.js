@@ -817,9 +817,9 @@ function runProjectInSandbox(files) {
 
   if (htmlFile) {
     // Use the HTML file as base, inject CSS and JS
-    htmlContent = htmlFile.content;
+    htmlContent = htmlFile.code;
     if (cssFiles.length > 0) {
-      const cssStr = cssFiles.map(f => f.content).join('\n');
+      const cssStr = cssFiles.map(f => f.code).join('\n');
       if (htmlContent.includes('</head>')) {
         htmlContent = htmlContent.replace('</head>', `<style>${cssStr}</style></head>`);
       } else {
@@ -827,7 +827,7 @@ function runProjectInSandbox(files) {
       }
     }
     if (jsFiles.length > 0) {
-      const jsStr = jsFiles.map(f => f.content).join('\n;\n');
+      const jsStr = jsFiles.map(f => f.code).join('\n;\n');
       if (htmlContent.includes('</body>')) {
         htmlContent = htmlContent.replace('</body>', `<script>${jsStr}<\/script></body>`);
       } else {
@@ -836,8 +836,8 @@ function runProjectInSandbox(files) {
     }
   } else if (jsFiles.length > 0) {
     // JS-only project: wrap with console capture
-    const allJs = jsFiles.map(f => f.content).join('\n;\n');
-    const allCss = cssFiles.map(f => f.content).join('\n');
+    const allJs = jsFiles.map(f => f.code).join('\n;\n');
+    const allCss = cssFiles.map(f => f.code).join('\n');
     htmlContent = `<!DOCTYPE html>
 <html><head><style>
   body { font-family: 'SF Mono', monospace; background: #1c1c1e; color: #e5e5e7; padding: 16px; font-size: 13px; }
@@ -857,7 +857,7 @@ function runProjectInSandbox(files) {
   try{${allJs}}catch(e){console.error(e.message)}
 <\/script></body></html>`;
   } else if (cssFiles.length > 0) {
-    const allCss = cssFiles.map(f => f.content).join('\n');
+    const allCss = cssFiles.map(f => f.code).join('\n');
     htmlContent = `<!DOCTYPE html><html><head><style>${allCss}</style></head><body><div class="preview"><h2>CSS Preview</h2><p>Your styles are applied.</p><button>Button</button><a href="#">Link</a><input placeholder="Input"></div></body></html>`;
   } else {
     htmlContent = `<!DOCTYPE html><html><body style="background:#1c1c1e;color:#e5e5e7;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:80vh"><div style="text-align:center"><p style="font-size:48px">🚫</p><p>No runnable files (HTML/JS/CSS) found in this project.</p></div></body></html>`;
