@@ -25,6 +25,7 @@ import {
   createTask,
   updateTask,
   deleteTask,
+  resetAllData,
 } from './db.js';
 import { sendChatMessage, abortCurrentRequest } from './chat.js';
 import { renderTeamPanel, showCreateTeamModal } from './teams.js';
@@ -1553,6 +1554,26 @@ function setupEventListeners() {
         currentWorkspaceId = allWorkspaces[0].id;
         renderSidebar();
         await switchWorkspace(currentWorkspaceId);
+      });
+    });
+  }
+
+  // Factory reset
+  const resetBtn = document.getElementById('reset-all-data');
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      showConfirmModal('Factory Reset', 'This will delete ALL data (workspaces, messages, teams, settings) and restart fresh. Are you sure?', async () => {
+        try {
+          await resetAllData();
+          window.location.reload();
+        } catch (err) {
+          console.error('Reset failed:', err);
+          showModal({
+            title: 'Reset Failed',
+            body: '<p>Failed to reset data. Please try again.</p>',
+            buttons: [{ label: 'OK', class: 'modal-btn-secondary' }]
+          });
+        }
       });
     });
   }

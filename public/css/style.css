@@ -1715,6 +1715,8 @@ textarea:focus-visible {
 .panel-action-btn { width: 100%; padding: 8px; border-radius: 8px; border: none; font-size: 13px; font-weight: 500; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: all 0.15s; font-family: var(--font-sans); }
 .panel-action-btn.danger { background: rgba(255,69,58,0.1); color: #FF453A; }
 .panel-action-btn.danger:hover { background: rgba(255,69,58,0.2); }
+.panel-action-btn.danger-outline { background: transparent; color: var(--red, #FF453A); border: 1px solid rgba(255,69,58,0.3); }
+.panel-action-btn.danger-outline:hover { background: rgba(255,69,58,0.1); border-color: rgba(255,69,58,0.5); }
 
 /* === Feature Hints (Welcome Screen) === */
 .feature-hints {

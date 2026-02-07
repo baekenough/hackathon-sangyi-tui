@@ -486,6 +486,17 @@ export async function deleteTask(id) {
   schedulePersist();
 }
 
+// === Factory Reset ===
+
+export async function resetAllData() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.deleteDatabase('sangyi-tui-db');
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+    req.onblocked = () => resolve(); // proceed even if blocked
+  });
+}
+
 // === Persistence (IndexedDB) ===
 
 let persistTimer = null;
