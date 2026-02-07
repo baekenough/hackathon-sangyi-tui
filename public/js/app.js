@@ -502,6 +502,31 @@ function appendMessageBubble(msg, container) {
 
 // --- Streaming ---
 
+// Lightweight markdown for streaming - no file-tree grouping, no base64 encoding
+function renderStreamingMarkdown(text) {
+  if (!text) return '';
+  let h = escapeHtml(text);
+  // Code blocks - simple pre/code, no file-tree
+  h = h.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    return `<pre class="stream-code"><code>${code}</code></pre>`;
+  });
+  // Inline code
+  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+  h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
+  h = h.replace(/^### (.+)$/gm, '<h4>$1</h4>');
+  h = h.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+  h = h.replace(/^# (.+)$/gm, '<h2>$1</h2>');
+  h = h.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
+  h = h.replace(/(<li>.*<\/li>\n?)+/g, (m) => '<ul>' + m + '</ul>');
+  h = h.replace(/\n/g, '<br>');
+  h = h.replace(/<br><(h[234]|ul|li)/g, '<$1');
+  h = h.replace(/<\/(h[234]|ul|li)><br>/g, '</$1>');
+  return h;
+}
+
+let _streamRenderTimer = null;
+
 function appendStreamingDelta(delta) {
   currentAssistantContent += delta;
   const container = document.getElementById('messages');
@@ -516,9 +541,16 @@ function appendStreamingDelta(delta) {
     container.appendChild(bubble);
   }
 
-  const content = bubble.querySelector('.message-bubble');
-  content.innerHTML = formatMarkdown(currentAssistantContent);
-  scrollToBottom();
+  // Throttle rendering to every 80ms
+  if (_streamRenderTimer) return;
+  _streamRenderTimer = setTimeout(() => {
+    _streamRenderTimer = null;
+    const content = bubble.querySelector('.message-bubble');
+    if (content) {
+      content.innerHTML = renderStreamingMarkdown(currentAssistantContent);
+      scrollToBottom();
+    }
+  }, 80);
 }
 
 // --- Auto-Configuration ---
@@ -807,8 +839,39 @@ function runInSandbox(code, lang) {
   window.addEventListener('message', handler);
 }
 
-function runProjectInSandbox(files) {
-  // Combine all files into a single runnable HTML page
+function runProjectInSandbox(files, projectContainer) {
+  // Check if preview already exists in this project container
+  let preview = projectContainer.querySelector('.file-tree-preview');
+
+  if (preview) {
+    // Toggle: if active, close it
+    if (preview.classList.contains('active')) {
+      preview.classList.remove('active');
+      return;
+    }
+    // Re-activate existing preview
+    preview.classList.add('active');
+    return;
+  }
+
+  // Create inline preview
+  preview = document.createElement('div');
+  preview.className = 'file-tree-preview';
+  preview.innerHTML = `
+    <div class="file-tree-preview-bar">
+      <span>▶ Preview</span>
+      <button class="file-tree-preview-close" title="Close preview">✕</button>
+    </div>
+    <iframe class="file-tree-preview-frame" sandbox="allow-scripts allow-modals"></iframe>
+  `;
+  projectContainer.appendChild(preview);
+
+  // Close button
+  preview.querySelector('.file-tree-preview-close').addEventListener('click', () => {
+    preview.classList.remove('active');
+  });
+
+  // Build HTML content from files
   let htmlFile = files.find(f => f.lang === 'html');
   const cssFiles = files.filter(f => f.lang === 'css');
   const jsFiles = files.filter(f => ['javascript', 'js', 'jsx', 'tsx', 'typescript', 'ts'].includes(f.lang));
@@ -816,7 +879,6 @@ function runProjectInSandbox(files) {
   let htmlContent = '';
 
   if (htmlFile) {
-    // Use the HTML file as base, inject CSS and JS
     htmlContent = htmlFile.code;
     if (cssFiles.length > 0) {
       const cssStr = cssFiles.map(f => f.code).join('\n');
@@ -835,7 +897,6 @@ function runProjectInSandbox(files) {
       }
     }
   } else if (jsFiles.length > 0) {
-    // JS-only project: wrap with console capture
     const allJs = jsFiles.map(f => f.code).join('\n;\n');
     const allCss = cssFiles.map(f => f.code).join('\n');
     htmlContent = `<!DOCTYPE html>
@@ -849,7 +910,7 @@ function runProjectInSandbox(files) {
 <script>
   const _log=console.log,_err=console.error,_warn=console.warn;
   function fmt(...a){return a.map(x=>typeof x==='object'?JSON.stringify(x,null,2):String(x)).join(' ')}
-  function add(t,c){const d=document.createElement('div');d.className='log '+c;d.textContent=t;document.body.appendChild(d);window.parent.postMessage({type:'sandbox-console',level:c,text:t},'*')}
+  function add(t,c){const d=document.createElement('div');d.className='log '+c;d.textContent=t;document.body.appendChild(d)}
   console.log=(...a)=>{add(fmt(...a),'');_log(...a)};
   console.error=(...a)=>{add(fmt(...a),'error');_err(...a)};
   console.warn=(...a)=>{add(fmt(...a),'warn');_warn(...a)};
@@ -860,11 +921,16 @@ function runProjectInSandbox(files) {
     const allCss = cssFiles.map(f => f.code).join('\n');
     htmlContent = `<!DOCTYPE html><html><head><style>${allCss}</style></head><body><div class="preview"><h2>CSS Preview</h2><p>Your styles are applied.</p><button>Button</button><a href="#">Link</a><input placeholder="Input"></div></body></html>`;
   } else {
-    htmlContent = `<!DOCTYPE html><html><body style="background:#1c1c1e;color:#e5e5e7;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:80vh"><div style="text-align:center"><p style="font-size:48px">🚫</p><p>No runnable files (HTML/JS/CSS) found in this project.</p></div></body></html>`;
+    htmlContent = `<!DOCTYPE html><html><body style="background:#1c1c1e;color:#e5e5e7;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:80vh"><div style="text-align:center"><p style="font-size:48px">🚫</p><p>No runnable files found.</p></div></body></html>`;
   }
 
-  // Reuse the existing sandbox panel
-  runInSandbox(htmlContent, 'html');
+  const frame = preview.querySelector('.file-tree-preview-frame');
+  frame.srcdoc = htmlContent;
+
+  // Slide open with requestAnimationFrame for smooth animation
+  requestAnimationFrame(() => {
+    preview.classList.add('active');
+  });
 }
 
 // --- Send Message ---
@@ -971,10 +1037,21 @@ async function handleSendMessage() {
         }
 
         case 'done':
+          // Clear any pending stream render
+          if (_streamRenderTimer) {
+            clearTimeout(_streamRenderTimer);
+            _streamRenderTimer = null;
+          }
           if (currentAssistantContent) {
-            // Finalize the streaming bubble
+            // Finalize the streaming bubble with FULL markdown rendering
             const streaming = container.querySelector('.message.message-assistant.streaming');
-            if (streaming) streaming.classList.remove('streaming');
+            if (streaming) {
+              const finalContent = streaming.querySelector('.message-bubble');
+              if (finalContent) {
+                finalContent.innerHTML = formatMarkdown(currentAssistantContent);
+              }
+              streaming.classList.remove('streaming');
+            }
             await addMessage(currentWorkspaceId, 'assistant', currentAssistantContent);
           }
           if (event.cost_usd) {
@@ -1000,6 +1077,7 @@ async function handleSendMessage() {
       scrollToBottom();
     }
     // Finalize any partial streaming content
+    if (_streamRenderTimer) { clearTimeout(_streamRenderTimer); _streamRenderTimer = null; }
     const streaming = container.querySelector('.message.message-assistant.streaming');
     if (streaming) {
       streaming.classList.remove('streaming');
@@ -1550,7 +1628,7 @@ function setupEventListeners() {
       if (projBtn.dataset.action === 'zip-project') {
         downloadProjectZip(files, container.querySelector('.file-tree-title').textContent.replace('📁 ', ''));
       } else if (projBtn.dataset.action === 'run-project') {
-        runProjectInSandbox(files);
+        runProjectInSandbox(files, container);
       }
       return;
     }
