@@ -547,6 +547,141 @@ function showSQLConsole() {
   });
 }
 
+// --- Code Block Download ---
+
+function downloadCodeBlock(code, lang) {
+  const extMap = {
+    javascript: 'js', js: 'js', typescript: 'ts', ts: 'ts',
+    python: 'py', html: 'html', css: 'css', json: 'json',
+    bash: 'sh', shell: 'sh', sql: 'sql', rust: 'rs',
+    go: 'go', java: 'java', kotlin: 'kt', ruby: 'rb',
+    yaml: 'yaml', yml: 'yml', xml: 'xml', markdown: 'md', md: 'md',
+    code: 'txt'
+  };
+  const ext = extMap[lang.toLowerCase()] || 'txt';
+  const filename = `code-${Date.now()}.${ext}`;
+  const blob = new Blob([code], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// --- Sandbox Execution ---
+
+function runInSandbox(code, lang) {
+  let panel = document.getElementById('sandbox-panel');
+
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'sandbox-panel';
+    panel.className = 'sandbox-panel';
+    panel.innerHTML = `
+      <div class="sandbox-header">
+        <span class="sandbox-title">▶ Sandbox Preview</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="sandbox-close-btn" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="sandbox-body">
+        <iframe id="sandbox-frame" class="sandbox-frame" sandbox="allow-scripts allow-modals"></iframe>
+        <div id="sandbox-console" class="sandbox-console"></div>
+      </div>
+    `;
+    document.getElementById('app').appendChild(panel);
+
+    panel.querySelector('.sandbox-close-btn').addEventListener('click', () => {
+      panel.classList.remove('active');
+    });
+  }
+
+  panel.classList.add('active');
+  const frame = document.getElementById('sandbox-frame');
+  const consoleEl = document.getElementById('sandbox-console');
+  consoleEl.innerHTML = '';
+
+  const langLower = lang.toLowerCase();
+  let htmlContent = '';
+
+  if (langLower === 'html') {
+    htmlContent = code;
+  } else if (langLower === 'css') {
+    htmlContent = `<!DOCTYPE html><html><head><style>${code}</style></head><body><div class="preview">CSS Preview</div><p>Your styles are applied to this page.</p></body></html>`;
+  } else if (['javascript', 'js', 'typescript', 'ts'].includes(langLower)) {
+    // Wrap JS with console capture
+    htmlContent = `<!DOCTYPE html>
+<html><head><style>
+  body { font-family: 'SF Mono', monospace; background: #1c1c1e; color: #e5e5e7; padding: 16px; font-size: 13px; }
+  .log { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.05); white-space: pre-wrap; word-break: break-all; }
+  .log.error { color: #FF453A; }
+  .log.warn { color: #FFD60A; }
+  .log.info { color: #64D2FF; }
+</style></head><body>
+<script>
+  // Override console methods to display output
+  const _log = console.log, _err = console.error, _warn = console.warn, _info = console.info;
+  function fmt(...args) {
+    return args.map(a => {
+      if (a === null) return 'null';
+      if (a === undefined) return 'undefined';
+      if (typeof a === 'object') { try { return JSON.stringify(a, null, 2); } catch { return String(a); } }
+      return String(a);
+    }).join(' ');
+  }
+  function addLine(text, cls) {
+    const div = document.createElement('div');
+    div.className = 'log ' + cls;
+    div.textContent = text;
+    document.body.appendChild(div);
+    // Also post to parent
+    window.parent.postMessage({ type: 'sandbox-console', level: cls, text }, '*');
+  }
+  console.log = (...a) => { addLine(fmt(...a), ''); _log(...a); };
+  console.error = (...a) => { addLine(fmt(...a), 'error'); _err(...a); };
+  console.warn = (...a) => { addLine(fmt(...a), 'warn'); _warn(...a); };
+  console.info = (...a) => { addLine(fmt(...a), 'info'); _info(...a); };
+
+  // Catch errors
+  window.onerror = (msg, src, line, col, err) => {
+    addLine('Error: ' + msg + ' (line ' + line + ')', 'error');
+  };
+  window.onunhandledrejection = (e) => {
+    addLine('Unhandled Promise: ' + e.reason, 'error');
+  };
+
+  try {
+    ${code}
+  } catch(e) {
+    console.error(e.message);
+  }
+</script></body></html>`;
+  } else {
+    // Unsupported language
+    htmlContent = `<!DOCTYPE html><html><head><style>body{font-family:system-ui;background:#1c1c1e;color:#e5e5e7;padding:20px;display:flex;align-items:center;justify-content:center;height:80vh}</style></head><body><div style="text-align:center"><p style="font-size:48px;margin:0">🚫</p><p>Runtime for <strong>${lang}</strong> is not available in browser sandbox.</p><p style="color:#98989d">Use Export to download and run locally.</p></div></body></html>`;
+  }
+
+  frame.srcdoc = htmlContent;
+
+  // Listen for console messages from iframe
+  const handler = (e) => {
+    if (e.data && e.data.type === 'sandbox-console') {
+      const line = document.createElement('div');
+      line.className = 'sandbox-console-line ' + (e.data.level || '');
+      line.textContent = e.data.text;
+      consoleEl.appendChild(line);
+      consoleEl.scrollTop = consoleEl.scrollHeight;
+    }
+  };
+  // Remove old listener if any
+  window.removeEventListener('message', window._sandboxHandler);
+  window._sandboxHandler = handler;
+  window.addEventListener('message', handler);
+}
+
 // --- Send Message ---
 
 async function handleSendMessage() {
@@ -1216,6 +1351,34 @@ function setupEventListeners() {
     if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
       e.preventDefault();
       showSQLConsole();
+    }
+  });
+
+  // Code block actions (event delegation)
+  document.getElementById('messages').addEventListener('click', (e) => {
+    const btn = e.target.closest('.code-action-btn');
+    if (!btn) return;
+
+    const wrapper = btn.closest('.code-block-wrapper');
+    if (!wrapper) return;
+
+    const encoded = wrapper.dataset.code;
+    const lang = wrapper.dataset.lang;
+    const code = decodeURIComponent(escape(atob(encoded)));
+
+    switch (btn.dataset.action) {
+      case 'copy':
+        navigator.clipboard.writeText(code).then(() => {
+          btn.textContent = '✓ Copied';
+          setTimeout(() => btn.textContent = 'Copy', 1500);
+        });
+        break;
+      case 'download':
+        downloadCodeBlock(code, lang);
+        break;
+      case 'run':
+        runInSandbox(code, lang);
+        break;
     }
   });
 
